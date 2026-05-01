@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python scripts/run_experiment.py --mock --n_samples 5 --i_max 3)",
+      "Bash(python -m json.tool)"
+    ]
+  }
+}
