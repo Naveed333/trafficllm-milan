@@ -1,0 +1,37 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "prepare_data",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/prepare_data.py",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "run_experiment (mock)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/run_experiment.py",
+      "args": ["--mock", "--n_samples", "1", "--i_max", "1"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "run_experiment (mock, full smoke)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/run_experiment.py",
+      "args": ["--mock", "--n_samples", "5", "--i_max", "3"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "run_experiment (live)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/run_experiment.py",
+      "args": ["--n_samples", "2", "--i_max", "3"],
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal"
+    }
+  ]
+}
