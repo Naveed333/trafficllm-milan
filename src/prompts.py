@@ -12,12 +12,11 @@ REFINE_INSTRUCTION = (
 )
 
 VALIDATION_REVIEW = (
-    "Please review the previous answers and identify any potential mistakes "
-    "(in reasoning about periodicity or method critique). Be concise."
+    "Please review the previous answers and find potential mistakes "
+    "(in the sine/cosine projections, periodicity alignment, or method critique)."
 )
 VALIDATION_CORRECT = (
-    "Now correct the previous answers based on the mistakes you identified. "
-    "Reply with the revised qualitative assessment only."
+    "Please correct the answers based on the identified mistakes."
 )
 
 
@@ -53,14 +52,18 @@ def build_question_prompt(sample: dict[str, Any]) -> str:
 def build_qualitative_prompt(
     sample: dict[str, Any], prediction: Sequence[float], method_name: str
 ) -> str:
+    gt = [round(v, 2) for v in sample["x_values"]]
+    pred = [round(v, 2) for v in prediction]
     return (
-        "QUALITATIVE REVIEW (no numerical errors needed — those are computed separately):\n"
-        f"Input window:\n{_fmt_series(sample['x_times'], sample['x_values'])}\n\n"
-        f"Your previous prediction (method: {method_name}):\n"
-        f"{[round(v, 2) for v in prediction]}\n\n"
-        "Answer briefly:\n"
-        "1) Periodicity: does the prediction respect the 24-hour daily cycle "
-        "visible in the input window? If not, where does it deviate?\n"
+        "QUALITATIVE REVIEW:\n"
+        f"Ground truth input window:\n{_fmt_series(sample['x_times'], sample['x_values'])}\n\n"
+        f"Your previous prediction (method: {method_name}):\n{pred}\n\n"
+        "Answer the following two questions:\n"
+        "1) Periodicity: For the ground truth values and the predictions, what are "
+        "their projected functions derived from the combination of sine and cosine functions? "
+        f"Ground truth values: {gt}. Prediction values: {pred}. "
+        "Do the predictions align with the periodicity of the ground truth? "
+        "If not, describe where they deviate.\n"
         "2) Method critique: what is the main weakness of the current method "
         f"('{method_name}') given this input pattern?\n"
     )
