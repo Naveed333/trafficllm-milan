@@ -1,100 +1,94 @@
-"""Prompt builders for TrafficLLM Algorithm 1."""
-from __future__ import annotations
-
-from typing import Any, Sequence
-
-REFINE_INSTRUCTION = (
-    "Using the input window, your prior predictions, the feedback, and the "
-    "Python-computed MAE values above, produce an improved 6-step prediction. "
-    "Reply EXACTLY in this format and nothing else:\n"
-    "Method: <one short phrase naming your forecasting method>\n"
-    "Prediction: [v1, v2, v3, v4, v5, v6]"
+SYSTEM = (
+    "You are a Milan hourly traffic forecaster. "
+    "Hourly loads are non-negative floats with strong 24-hour periodicity. "
+    "Follow the format of the examples: produce an initial prediction, "
+    "4-aspect self-feedback, then a refined prediction. "
+    "The line beginning 'Refined prediction:' must contain exactly 24 "
+    "comma-separated non-negative numbers and nothing else."
 )
 
-VALIDATION_REVIEW = (
-    "Please review the previous answers and find potential mistakes "
-    "(in the sine/cosine projections, periodicity alignment, or method critique)."
+# ── p_ques (appended after p_input at test time) ──────────────────────────────
+PQUES = (
+    "Produce, in this exact format:\n"
+    "Initial prediction: <24 comma-separated numbers>\n"
+    "Feedback:\n"
+    "  Q1 (overall performance): What is the Mean Absolute Error you would expect "
+    "for these predictions, given the historical pattern? Show arithmetic; output a "
+    "single number.\n"
+    "  Q2 (periodical performance): For the past 24 loads and your predicted 24 "
+    "loads, what are their projected functions derived from the combination of sine "
+    "and cosine functions (period=24h)? Report (a_sin, a_cos) for each and state "
+    "whether they align.\n"
+    "  Q3 (prediction format): Do the predictions align with the format of the "
+    "historical loads and provide a complete prediction for each timestamp?\n"
+    "  Q4 (prediction method): What is the prediction method applied in the current "
+    "iteration, and which more accurate method (numerical, machine learning, or "
+    "hybrid) would you use next?\n"
+    "Refined prediction: <24 comma-separated numbers>"
 )
-VALIDATION_CORRECT = (
-    "Please correct the answers based on the identified mistakes."
+
+# ── Phase-A prompt templates (multi-call iterative refinement with real GT) ───
+
+def p_input_timestamped(x_times, x_values):
+    rows = "\n".join(f"  {t}, {v:.2f}" for t, v in zip(x_times, x_values))
+    return f"Past 24 hourly loads (timestamp UTC, value):\n{rows}"
+
+
+def p_feed(x_times, x_values, y_times, y_values, y_hat, iteration):
+    x_str = ", ".join(f"{v:.2f}" for v in x_values)
+    y_str = ", ".join(f"{v:.2f}" for v in y_values)
+    yhat_str = ", ".join(f"{v:.2f}" for v in y_hat)
+    return (
+        f"Past 24 loads: {x_str}\n"
+        f"Ground-truth next 24 loads: {y_str}\n"
+        f"Current prediction ŷ_{iteration}: {yhat_str}\n\n"
+        "Q1 (overall performance): What is the Mean Absolute Error of the predictions? "
+        "Compute MAE = mean(|ŷ − y|). Show arithmetic; output the number.\n"
+        "Q2 (periodical performance): For ground truths and predictions, what are their "
+        "projected functions derived from the combination of sine and cosine functions "
+        "(period=24)? Report (a_sin, a_cos) coefficients for each; state whether "
+        "predicted periodicity matches ground-truth periodicity.\n"
+        "Q3 (prediction format): Do the predictions align with the format of the ground "
+        "truths and provide a complete prediction for each timestamp?\n"
+        "Q4 (prediction method): What is the prediction method applied in the current "
+        "iteration? Propose a more accurate method (numerical, machine learning, or "
+        "hybrid; e.g., Seasonal ARIMA, LSTM+ARIMA hybrid)."
+    )
+
+
+PVALIDATE = (
+    "Please review the previous answers and find potential mistakes, "
+    "particularly in the MAE arithmetic in Q1 and the sin/cos projection in Q2. "
+    "List each mistake on its own line, or write 'none' if there are none."
 )
 
+PCRITIQUE = (
+    "Please correct the answers based on the identified mistakes. "
+    "Re-emit Q1–Q4 in the same structure with corrected numbers."
+)
 
-def _fmt_series(times: Sequence[str], values: Sequence[float]) -> str:
-    return "\n".join(f"  {t}: {v:.2f}" for t, v in zip(times, values))
-
-
-def build_exam_prompt(example: dict[str, Any]) -> str:
+def p_refine(iteration):
     return (
-        "EXAMPLE (for format reference only):\n"
-        f"Input window (24 hourly values):\n{_fmt_series(example['x_times'], example['x_values'])}\n"
-        f"Correct next-6-hour values:\n{_fmt_series(example['y_times'], example['y_values'])}\n"
-        f"Correct prediction list: {[round(v, 2) for v in example['y_values']]}\n"
+        "Please refine predictions based on the previous thorough feedback. "
+        "To enhance performance, more accurate time series prediction methods should "
+        "be considered, including numerical methods, machine learning methods, and "
+        "hybrid methods. The prediction should match the function of the real Milan "
+        "hourly traffic. The prediction should be complete and match the format of "
+        "the real Milan hourly traffic. "
+        f"Output 24 comma-separated non-negative numbers on a single line "
+        f"(iteration {iteration + 1} refined prediction)."
     )
 
 
-def build_input_prompt(sample: dict[str, Any]) -> str:
+def render_demo_chain(train_idx, x_times, x_values, y_hat_initial,
+                      feedback_corrected, y_hat_refined):
+    x_rows = "\n".join(f"  {t}, {v:.2f}" for t, v in zip(x_times, x_values))
+    init_str = ", ".join(f"{v:.2f}" for v in y_hat_initial)
+    refined_str = ", ".join(f"{v:.2f}" for v in y_hat_refined)
     return (
-        "INPUT WINDOW (24 hourly internet-traffic values to forecast from):\n"
-        f"{_fmt_series(sample['x_times'], sample['x_values'])}\n"
+        f"[Example (train idx {train_idx})]\n"
+        f"Past 24 hourly loads (timestamp UTC, value):\n{x_rows}\n"
+        f"Initial prediction: {init_str}\n"
+        f"Feedback:\n{feedback_corrected}\n"
+        f"Refined prediction: {refined_str}"
     )
-
-
-def build_question_prompt(sample: dict[str, Any]) -> str:
-    horizon_times = sample["y_times"]
-    return (
-        f"QUESTION: Predict the next {len(horizon_times)} hourly values "
-        f"(for {horizon_times[0]} through {horizon_times[-1]}).\n"
-        "Reply with ONLY a Python list of 6 numbers, e.g. [12.3, 14.1, ...].\n"
-    )
-
-
-def build_qualitative_prompt(
-    sample: dict[str, Any], prediction: Sequence[float], method_name: str
-) -> str:
-    gt = [round(v, 2) for v in sample["x_values"]]
-    pred = [round(v, 2) for v in prediction]
-    return (
-        "QUALITATIVE REVIEW:\n"
-        f"Ground truth input window:\n{_fmt_series(sample['x_times'], sample['x_values'])}\n\n"
-        f"Your previous prediction (method: {method_name}):\n{pred}\n\n"
-        "Answer the following two questions:\n"
-        "1) Periodicity: For the ground truth values and the predictions, what are "
-        "their projected functions derived from the combination of sine and cosine functions? "
-        f"Ground truth values: {gt}. Prediction values: {pred}. "
-        "Do the predictions align with the periodicity of the ground truth? "
-        "If not, describe where they deviate.\n"
-        "2) Method critique: what is the main weakness of the current method "
-        f"('{method_name}') given this input pattern?\n"
-    )
-
-
-def build_feedback_prompt(
-    sample: dict[str, Any],
-    prediction: Sequence[float],
-    mae_value: float,
-    method_name: str,
-    qualitative_answers: str,
-) -> str:
-    return (
-        "FEEDBACK:\n"
-        f"- Overall performance: MAE = {mae_value:.4f} (computed in Python).\n"
-        f"- Current method: {method_name}.\n"
-        f"- Format check: prediction has {len(prediction)} values "
-        f"(expected {len(sample['y_times'])}).\n"
-        "- Periodicity & method critique (validated qualitative review):\n"
-        f"{qualitative_answers.strip()}\n"
-    )
-
-
-def build_refine_prompt(sample: dict[str, Any], history: list[dict[str, Any]]) -> str:
-    parts: list[str] = [build_input_prompt(sample), build_question_prompt(sample)]
-    for h in history:
-        parts.append(
-            f"\n--- ITERATION {h['iter']} ---\n"
-            f"Prior prediction (method: {h['method']}): "
-            f"{[round(v, 2) for v in h['prediction']]}\n"
-            f"{h['feedback']}"
-        )
-    parts.append("\n" + REFINE_INSTRUCTION)
-    return "\n".join(parts)

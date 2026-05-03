@@ -1,109 +1,104 @@
-"""Run TrafficLLM Algorithm 1 over a subset of the test set."""
-from __future__ import annotations
+#!/usr/bin/env python3
+"""
+TrafficLLM experiment runner.
 
+Phase A: build K demo chains from train.jsonl (run once, cached to outputs/demo_chains.json).
+Phase B: predict each test sample with a single LLM call using the cached demos.
+"""
 import argparse
 import json
-import logging
 import os
-import random
-import re
 import sys
 import time
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.data import EXAM_TRAIN_IDX  # noqa: E402
-from src.llm import DEFAULT_MODEL, make_client  # noqa: E402
-from src.metrics import mae, mse  # noqa: E402
-from src.trafficllm import trafficllm  # noqa: E402
+from src.data import load_jsonl
+from src.metrics import mae, mse
+from src.trafficllm import build_demos, run_test_sample
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s | %(message)s")
-log = logging.getLogger("run_experiment")
+DATASET_DIR = os.path.join(os.path.dirname(__file__), "..", "dataset")
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "outputs")
+DEMO_CACHE = os.path.join(OUTPUT_DIR, "demo_chains.json")
 
 
-def load_jsonl(path: Path) -> list[dict]:
-    with path.open() as f:
-        return [json.loads(line) for line in f]
-
-
-def slug(s: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_") or "model"
-
-
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", DEFAULT_MODEL))
-    parser.add_argument("--i_max", type=int, default=5)
-    parser.add_argument("--n_samples", type=int, default=5)
-    parser.add_argument("--output_dir", default=str(ROOT / "outputs"))
+    parser.add_argument("--n_test", type=int, default=3,
+                        help="Number of test samples to evaluate (default: 3)")
+    parser.add_argument("--k_demos", type=int, default=2,
+                        help="Number of demo chains to build (default: 2)")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--mock", action="store_true")
+    parser.add_argument("--max_iter", type=int, default=3,
+                        help="Max refinement iterations in Phase A (default: 3)")
+    parser.add_argument("--rebuild_demos", action="store_true",
+                        help="Force rebuild demo_chains.json even if it exists")
     args = parser.parse_args()
 
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    train = load_jsonl(out_dir / "train.jsonl")
-    test = load_jsonl(out_dir / "test.jsonl")
-    example = train[EXAM_TRAIN_IDX]
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    if args.n_samples == -1 or args.n_samples >= len(test):
-        chosen = test
+    # ── Phase A ───────────────────────────────────────────────────────────────
+    if os.path.exists(DEMO_CACHE) and not args.rebuild_demos:
+        print(f"[Phase A] Loading cached demos from {DEMO_CACHE}")
+        with open(DEMO_CACHE) as f:
+            demos = json.load(f)
     else:
-        rng = random.Random(args.seed)
-        chosen = rng.sample(test, args.n_samples)
+        print(f"[Phase A] Building {args.k_demos} demo chains from train.jsonl ...")
+        train_rows = load_jsonl(os.path.join(DATASET_DIR, "milan_train.jsonl"))
+        demos = build_demos(train_rows, k=args.k_demos, seed=args.seed,
+                            max_iter=args.max_iter)
+        with open(DEMO_CACHE, "w") as f:
+            json.dump(demos, f, indent=2)
+        print(f"[Phase A] Saved demos to {DEMO_CACHE}")
 
-    llm = make_client(mock=args.mock) if args.mock else make_client(mock=False)
-    if not args.mock:
-        llm.model = args.model
-        log.info("using OpenAI model %s", llm.model)
-    else:
-        log.info("using MockLLMClient")
+    demo_chains = [d["rendered_chain"] for d in demos]
+    print(f"[Phase A] Using {len(demo_chains)} demo chain(s).\n")
 
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    log_name = f"{slug(args.model if not args.mock else 'mock')}_{ts}.jsonl"
-    log_path = out_dir / log_name
-    log.info("writing iteration log to %s", log_path)
+    # ── Phase B ───────────────────────────────────────────────────────────────
+    test_rows = load_jsonl(os.path.join(DATASET_DIR, "milan_test.jsonl"))
+    test_rows = test_rows[:args.n_test]
 
-    summary: list[tuple[int, float, float, int]] = []
-    with log_path.open("w") as fout:
-        for s in chosen:
-            try:
-                _final_pred, history = trafficllm(s, llm, example, i_max=args.i_max)
-            except Exception as e:
-                log.warning("sample %d failed: %s", s["idx"], e)
-                continue
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(OUTPUT_DIR, f"run_{timestamp}.jsonl")
 
-            for h in history:
-                pred = h["prediction"]
-                row = {
-                    "sample_idx": s["idx"],
-                    "iter": h["iter"],
-                    "method": h["method"],
-                    "prediction": pred,
-                    "y_true": s["y_values"],
-                    "mae": mae(pred, s["y_values"]),
-                    "mse": mse(pred, s["y_values"]),
-                    "prompt_chars": len(h["feedback"]),
+    total_mae, total_mse, n_ok = 0.0, 0.0, 0
+    print(f"[Phase B] Evaluating {len(test_rows)} test sample(s) ...\n")
+
+    with open(out_path, "w") as out_f:
+        for row in test_rows:
+            idx = row["idx"]
+            x_times = row["x_times"]
+            x_values = row["x_values"]
+            y_values = row["y_values"]   # held-out GT for scoring only
+
+            y_hat, raw = run_test_sample(demo_chains, x_times, x_values)
+
+            if y_hat is None:
+                print(f"  idx {idx}: PARSE FAILURE — skipping.")
+                result = {"idx": idx, "error": "parse_failure", "raw_response": raw}
+            else:
+                sample_mae = mae(y_values, y_hat)
+                sample_mse = mse(y_values, y_hat)
+                total_mae += sample_mae
+                total_mse += sample_mse
+                n_ok += 1
+                print(f"  idx {idx}: MAE={sample_mae:.4f}  MSE={sample_mse:.4f}")
+                result = {
+                    "idx": idx,
+                    "x_values": x_values,
+                    "y_values": y_values,
+                    "y_hat_final": y_hat,
+                    "mae": sample_mae,
+                    "mse": sample_mse,
+                    "raw_response": raw,
                 }
-                fout.write(json.dumps(row) + "\n")
 
-            iter0_mae = history[0]["mae"]
-            final_mae = history[-1]["mae"]
-            summary.append((s["idx"], iter0_mae, final_mae, len(history)))
+            out_f.write(json.dumps(result) + "\n")
 
-    print("\nSummary (sample_idx | iter0 MAE | final MAE | iters)")
-    print("-" * 56)
-    improved = 0
-    for idx, m0, mf, n in summary:
-        mark = "↓" if mf < m0 else "—"
-        if mf < m0:
-            improved += 1
-        print(f"{idx:>10d} | {m0:>9.4f} | {mf:>9.4f} | {n:>5d}  {mark}")
-    print("-" * 56)
-    print(f"{improved}/{len(summary)} samples improved (final < iter-0)")
-    print(f"log: {log_path}")
+    if n_ok:
+        print(f"\n[Results] n={n_ok}  Avg MAE={total_mae/n_ok:.4f}  Avg MSE={total_mse/n_ok:.4f}")
+        print(f"[Paper]   TrafficLLM: MAE=12.37  MSE=181.22  |  GPT-4 baseline: MAE=14.92  MSE=216.41")
+    print(f"[Output]  {out_path}")
 
 
 if __name__ == "__main__":

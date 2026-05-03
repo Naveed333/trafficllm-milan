@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(python scripts/run_experiment.py --mock --n_samples 5 --i_max 3)",
-      "Bash(python -m json.tool)"
+      "Bash(python -m json.tool)",
+      "Bash(brew install *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(python3 -c \"import openai; print\\('openai ok'\\)\")",
+      "Bash(python3 -c \"import dotenv; print\\('dotenv ok'\\)\")",
+      "Bash(python3 -c ' *)"
     ]
   }
 }
