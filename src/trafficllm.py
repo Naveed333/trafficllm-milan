@@ -1,6 +1,5 @@
 import re
 import json
-import random
 
 from .llm import chat
 from .metrics import mae
@@ -37,13 +36,12 @@ def _initial_prediction(messages):
 
 # ── Phase A: build_demos ──────────────────────────────────────────────────────
 
-def build_demos(train_rows, k=2, seed=42, max_iter=3, conv_threshold=0.001):
+def build_demos(train_rows, k=2, max_iter=3, conv_threshold=0.001):
     """
     Run Algorithm 1 iteratively on k training samples (GT available).
     Returns list of rendered chain strings ready for p_exam.
     """
-    rng = random.Random(seed)
-    chosen = rng.sample(train_rows, k)
+    chosen = train_rows[:k]
     demos = []
 
     for row in chosen:
