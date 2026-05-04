@@ -2,18 +2,33 @@ import re
 import json
 
 from .llm import chat
-from .metrics import mae
+from .metrics import mae, fit_sincos
 from .prompts import (
     SYSTEM, PQUES, PVALIDATE, PCRITIQUE,
     p_input_timestamped, p_feed, p_refine, render_demo_chain,
 )
 
 
-def _parse_24(text):
-    """Extract the first sequence of exactly 24 comma-separated floats from text."""
-    # Try every line, return first that yields 24 numbers
+def _trim_feedback(text, max_chars=600):
+    """Truncate LLM critique to a safe length to avoid bloated demo chains."""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    last_newline = truncated.rfind('\n')
+    if last_newline > max_chars // 2:
+        truncated = truncated[:last_newline]
+    return truncated + "\n[truncated for conciseness]"
+
+
+def _parse_24(text, prefer_last=False):
+    """Extract a sequence of exactly 24 comma-separated floats from text.
+
+    prefer_last=True returns the last match (for Phase B where the refined
+    prediction appears at the end of any chain the LLM follows from demos).
+    prefer_last=False returns the first match (for Phase A initial prediction).
+    """
+    result = None
     for line in text.splitlines():
-        # Strip common prefixes like "Refined prediction:" or "Initial prediction:"
         clean = re.sub(r'^[^0-9\-\.]*', '', line).strip()
         if not clean:
             continue
@@ -21,10 +36,12 @@ def _parse_24(text):
         try:
             nums = [float(p) for p in parts if p]
             if len(nums) == 24:
-                return nums
+                if not prefer_last:
+                    return nums
+                result = nums  # keep scanning for a later match
         except ValueError:
             continue
-    return None
+    return result
 
 
 def _initial_prediction(messages):
@@ -47,13 +64,12 @@ def build_demos(train_rows, k=2, max_iter=3, conv_threshold=0.001):
     for row in chosen:
         x_times = row["x_times"]
         x_values = row["x_values"]
-        y_times = row["y_times"]
         y_values = row["y_values"]
         train_idx = row["idx"]
 
         print(f"[Phase A] Building demo for train idx {train_idx} ...")
 
-        # Step 1: initial prediction (no demos in p_exam for building the demo itself)
+        # Step 1: initial prediction
         pinput = p_input_timestamped(x_times, x_values)
         messages = [
             {"role": "system", "content": SYSTEM},
@@ -65,7 +81,6 @@ def build_demos(train_rows, k=2, max_iter=3, conv_threshold=0.001):
         ]
         response, y_hat = _initial_prediction(messages)
         if y_hat is None:
-            # retry with stricter instruction
             messages.append({"role": "assistant", "content": response})
             messages.append({"role": "user", "content":
                 "Your output did not contain exactly 24 numbers. "
@@ -79,46 +94,55 @@ def build_demos(train_rows, k=2, max_iter=3, conv_threshold=0.001):
         y_hat_initial = list(y_hat)
         prev_mae = mae(y_values, y_hat)
         last_feedback = ""
+        print(f"  initial MAE: {prev_mae:.4f}")
 
-        # Iterative loop (Algorithm 1 with real GT)
+        # Iterative refinement loop (Algorithm 1) — capped at max_iter
         for i in range(max_iter):
-            # Step 2: feedback (Q1–Q4, real GT available)
+            print(f"  ==> iter {i+1}/{max_iter}: requesting feedback ...")
+
+            # Step 2: feedback (Q1–Q4) — GT not exposed raw to prevent copying
+            abs_errors = [abs(y_hat[j] - y_values[j]) for j in range(24)]
+            current_mae = mae(y_values, y_hat)
+            gt_sin_cos = fit_sincos(y_values)
             messages.append({"role": "user", "content": p_feed(
-                x_times, x_values, y_times, y_values, y_hat, i
+                x_times, x_values, abs_errors, current_mae, gt_sin_cos, y_hat, i
             )})
-            fb_response = chat(messages)
+            fb_response = chat(messages, max_tokens=1024)
             messages.append({"role": "assistant", "content": fb_response})
 
             # Step 3: validate
+            print(f"  ==> iter {i+1}/{max_iter}: validating ...")
             messages.append({"role": "user", "content": PVALIDATE})
-            val_response = chat(messages)
+            val_response = chat(messages, max_tokens=600)
             messages.append({"role": "assistant", "content": val_response})
 
             # Step 4: critique → corrected feedback
+            print(f"  ==> iter {i+1}/{max_iter}: critiquing ...")
             messages.append({"role": "user", "content": PCRITIQUE})
-            critique_response = chat(messages)
+            critique_response = chat(messages, max_tokens=500)
             messages.append({"role": "assistant", "content": critique_response})
             last_feedback = critique_response
 
             # Step 5: refine (Eqn 5 — full history already in messages)
+            print(f"  ==> iter {i+1}/{max_iter}: refining prediction ...")
             messages.append({"role": "user", "content": p_refine(i)})
-            refine_response = chat(messages)
+            refine_response = chat(messages, max_tokens=150)
             messages.append({"role": "assistant", "content": refine_response})
 
             new_hat = _parse_24(refine_response)
             if new_hat is None:
-                print(f"  [warn] iter {i}: could not parse refined prediction, keeping previous.")
+                print(f"  [warn] iter {i+1}: could not parse refined prediction, stopping.")
                 break
 
             new_mae = mae(y_values, new_hat)
-            print(f"  iter {i}: MAE {prev_mae:.4f} → {new_mae:.4f}")
-
-            if abs(new_mae - prev_mae) < conv_threshold:
-                print(f"  converged at iter {i}.")
-                y_hat = new_hat
-                break
+            print(f"  iter {i+1}: MAE {prev_mae:.4f} → {new_mae:.4f}")
 
             y_hat = new_hat
+
+            if new_mae < conv_threshold or abs(new_mae - prev_mae) < conv_threshold:
+                print(f"  converged (MAE={new_mae:.4f}).")
+                break
+
             prev_mae = new_mae
 
         chain = render_demo_chain(train_idx, x_times, x_values,
@@ -153,7 +177,7 @@ def run_test_sample(demo_chains, x_times, x_values):
     response = chat(messages)
     y_hat = None
 
-    # Try to extract "Refined prediction:" line first (preferred)
+    # If LLM followed the demo chain format, "Refined prediction:" is the last line
     for line in response.splitlines():
         if line.lower().startswith("refined prediction"):
             nums = _parse_24(line)
@@ -161,18 +185,18 @@ def run_test_sample(demo_chains, x_times, x_values):
                 y_hat = nums
                 break
 
-    # Fallback: scan all lines for first valid 24-number sequence
+    # Fallback: take the LAST valid 24-number line (refined = last in any chain)
     if y_hat is None:
-        y_hat = _parse_24(response)
+        y_hat = _parse_24(response, prefer_last=True)
 
-    # Last resort: retry with stricter prompt
+    # Last resort: retry asking for just the numbers
     if y_hat is None:
         messages.append({"role": "assistant", "content": response})
         messages.append({"role": "user", "content":
-            "The 'Refined prediction:' line did not contain exactly 24 numbers. "
-            "Output ONLY the refined prediction: 24 comma-separated numbers, nothing else."})
+            "Output ONLY your final prediction: exactly 24 comma-separated "
+            "non-negative numbers on a single line, nothing else."})
         retry = chat(messages)
-        y_hat = _parse_24(retry)
+        y_hat = _parse_24(retry, prefer_last=True)
         response = response + "\n[retry]\n" + retry
 
     return y_hat, response

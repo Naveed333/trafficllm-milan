@@ -1,30 +1,17 @@
 SYSTEM = (
     "You are a Milan hourly traffic forecaster. "
     "Hourly loads are non-negative floats with strong 24-hour periodicity. "
-    "Follow the format of the examples: produce an initial prediction, "
-    "4-aspect self-feedback, then a refined prediction. "
-    "The line beginning 'Refined prediction:' must contain exactly 24 "
-    "comma-separated non-negative numbers and nothing else."
+    "Follow the format shown in the examples. "
+    "When asked to predict, output exactly 24 comma-separated non-negative numbers."
 )
 
 # ── p_ques (appended after p_input at test time) ──────────────────────────────
+# Per paper Section II-B: p_ques "involves inquiries about future traffic" only.
+# Q1-Q4 feedback belongs to p_feed (Phase A only). At test time the chain
+# format is learned from p_exam demo examples, not from explicit instructions here.
 PQUES = (
-    "Produce, in this exact format:\n"
-    "Initial prediction: <24 comma-separated numbers>\n"
-    "Feedback:\n"
-    "  Q1 (overall performance): What is the Mean Absolute Error you would expect "
-    "for these predictions, given the historical pattern? Show arithmetic; output a "
-    "single number.\n"
-    "  Q2 (periodical performance): For the past 24 loads and your predicted 24 "
-    "loads, what are their projected functions derived from the combination of sine "
-    "and cosine functions (period=24h)? Report (a_sin, a_cos) for each and state "
-    "whether they align.\n"
-    "  Q3 (prediction format): Do the predictions align with the format of the "
-    "historical loads and provide a complete prediction for each timestamp?\n"
-    "  Q4 (prediction method): What is the prediction method applied in the current "
-    "iteration, and which more accurate method (numerical, machine learning, or "
-    "hybrid) would you use next?\n"
-    "Refined prediction: <24 comma-separated numbers>"
+    "What are the predicted hourly traffic loads for the next 24 hours? "
+    "Output exactly 24 comma-separated non-negative numbers on a single line."
 )
 
 # ── Phase-A prompt templates (multi-call iterative refinement with real GT) ───
@@ -34,25 +21,32 @@ def p_input_timestamped(x_times, x_values):
     return f"Past 24 hourly loads (timestamp UTC, value):\n{rows}"
 
 
-def p_feed(x_times, x_values, y_times, y_values, y_hat, iteration):
+def p_feed(x_times, x_values, abs_errors, mae_val, gt_sin_cos, y_hat, iteration):
+    """
+    abs_errors   : list of |ŷ_i - y_i| (pre-computed, GT not exposed raw)
+    mae_val      : scalar MAE (pre-computed)
+    gt_sin_cos   : (a_sin, a_cos) fitted on GT (pre-computed, GT not exposed raw)
+    """
     x_str = ", ".join(f"{v:.2f}" for v in x_values)
-    y_str = ", ".join(f"{v:.2f}" for v in y_values)
     yhat_str = ", ".join(f"{v:.2f}" for v in y_hat)
+    err_str = ", ".join(f"{e:.2f}" for e in abs_errors)
+    a_sin_gt, a_cos_gt = gt_sin_cos
     return (
         f"Past 24 loads: {x_str}\n"
-        f"Ground-truth next 24 loads: {y_str}\n"
-        f"Current prediction ŷ_{iteration}: {yhat_str}\n\n"
-        "Q1 (overall performance): What is the Mean Absolute Error of the predictions? "
-        "Compute MAE = mean(|ŷ − y|). Show arithmetic; output the number.\n"
-        "Q2 (periodical performance): For ground truths and predictions, what are their "
-        "projected functions derived from the combination of sine and cosine functions "
-        "(period=24)? Report (a_sin, a_cos) coefficients for each; state whether "
-        "predicted periodicity matches ground-truth periodicity.\n"
-        "Q3 (prediction format): Do the predictions align with the format of the ground "
-        "truths and provide a complete prediction for each timestamp?\n"
-        "Q4 (prediction method): What is the prediction method applied in the current "
-        "iteration? Propose a more accurate method (numerical, machine learning, or "
-        "hybrid; e.g., Seasonal ARIMA, LSTM+ARIMA hybrid)."
+        f"Current prediction ŷ_{iteration}: {yhat_str}\n"
+        f"Per-step absolute errors |ŷ - y| (t=0..23): {err_str}\n"
+        f"MAE = {mae_val:.4f}\n\n"
+        "Q1 (overall performance): The MAE above is exact. Identify which timesteps "
+        "have the largest errors and describe the pattern of over- or under-prediction.\n"
+        f"Q2 (periodical performance): The ground-truth sine/cosine projection "
+        f"(period=24, t=0..23) has coefficients a_sin={a_sin_gt:.4f}, a_cos={a_cos_gt:.4f}. "
+        f"Fit the current prediction to the same form A·sin(2π·t/24)+B·cos(2π·t/24) "
+        f"and report its (a_sin, a_cos). State whether the predicted periodicity "
+        f"matches ground-truth periodicity.\n"
+        "Q3 (prediction format): Do the predictions provide a complete non-negative "
+        "value for each of the 24 timestamps?\n"
+        "Q4 (prediction method): What method was used in the current iteration? "
+        "Propose a more accurate method (e.g., Seasonal ARIMA, LSTM+ARIMA hybrid)."
     )
 
 
@@ -64,7 +58,9 @@ PVALIDATE = (
 
 PCRITIQUE = (
     "Please correct the answers based on the identified mistakes. "
-    "Re-emit Q1–Q4 in the same structure with corrected numbers."
+    "Re-emit Q1–Q4 in the same structure with corrected numbers. "
+    "Be concise: for Q1 state only the final MAE value (no per-row table). "
+    "Keep the entire response under 150 words."
 )
 
 def p_refine(iteration):

@@ -45,8 +45,7 @@ def main():
     else:
         print(f"[Phase A] Building {args.k_demos} demo chains from train.jsonl ...")
         train_rows = load_jsonl(os.path.join(DATASET_DIR, "milan_train.jsonl"))
-        demos = build_demos(train_rows, k=args.k_demos,
-                            max_iter=args.max_iter)
+        demos = build_demos(train_rows, k=args.k_demos, max_iter=args.max_iter)
         with open(DEMO_CACHE, "w") as f:
             json.dump(demos, f, indent=2)
         print(f"[Phase A] Saved demos to {DEMO_CACHE}")
