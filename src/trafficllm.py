@@ -26,6 +26,9 @@ def _parse_24(text, prefer_last=False):
     prefer_last=True returns the last match (for Phase B where the refined
     prediction appears at the end of any chain the LLM follows from demos).
     prefer_last=False returns the first match (for Phase A initial prediction).
+
+    Falls back to collecting all floats across the full response and
+    returning the last 24 — handles base models that wrap across lines.
     """
     result = None
     for line in text.splitlines():
@@ -38,10 +41,17 @@ def _parse_24(text, prefer_last=False):
             if len(nums) == 24:
                 if not prefer_last:
                     return nums
-                result = nums  # keep scanning for a later match
+                result = nums
         except ValueError:
             continue
-    return result
+    if result is not None:
+        return result
+
+    # Fallback: extract all floats from the entire text and take last 24
+    all_nums = [float(x) for x in re.findall(r'-?\d+(?:\.\d+)?', text)]
+    if len(all_nums) >= 24:
+        return all_nums[-24:]
+    return None
 
 
 def _initial_prediction(messages):
@@ -104,6 +114,7 @@ def build_demos(train_rows, k=2, max_iter=3, conv_threshold=0.001):
             abs_errors = [abs(y_hat[j] - y_values[j]) for j in range(24)]
             current_mae = mae(y_values, y_hat)
             gt_sin_cos = fit_sincos(y_values)
+            print("Sine cosine fit to GT:", gt_sin_cos)
             messages.append({"role": "user", "content": p_feed(
                 x_times, x_values, abs_errors, current_mae, gt_sin_cos, y_hat, i
             )})
