@@ -94,7 +94,7 @@ def build_demos(train_rows, k=2, max_iter=3, conv_threshold=0.001):
             messages.append({"role": "assistant", "content": response})
             messages.append({"role": "user", "content":
                 "Your output did not contain exactly 24 numbers. "
-                "Output ONLY 24 comma-separated numbers, nothing else."})
+                "Output ONLY 24 comma-separated non-negative numbers, nothing else."})
             response, y_hat = _initial_prediction(messages)
         if y_hat is None:
             print(f"  [warn] Could not parse initial prediction for idx {train_idx}, skipping.")
