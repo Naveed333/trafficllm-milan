@@ -44,7 +44,7 @@ def main():
             demos = json.load(f)
     else:
         print(f"[Phase A] Building {args.k_demos} demo chains from train.jsonl ...")
-        train_rows = load_jsonl(os.path.join(DATASET_DIR, "milan_train.jsonl"))
+        train_rows = load_jsonl(os.path.join(DATASET_DIR, "w_24-milan_train.jsonl"))
         demos = build_demos(train_rows, k=args.k_demos, max_iter=args.max_iter)
         with open(DEMO_CACHE, "w") as f:
             json.dump(demos, f, indent=2)
@@ -54,7 +54,7 @@ def main():
     print(f"[Phase A] Using {len(demo_chains)} demo chain(s).\n")
 
     # ── Phase B ───────────────────────────────────────────────────────────────
-    test_rows = load_jsonl(os.path.join(DATASET_DIR, "milan_test.jsonl"))
+    test_rows = load_jsonl(os.path.join(DATASET_DIR, "w_24-milan_test.jsonl"))
     test_rows = test_rows[:args.n_test]
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
