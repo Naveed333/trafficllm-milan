@@ -4,3 +4,9 @@ __pycache__/
 *.pyc
 .DS_Store
 outputs/*.jsonl
+.claude/worktrees/
+.claude/
+
+./THESIS_METHODOLOGY.md
+THESIS_METHODOLOGY.md
+.claude/settings.local.json
