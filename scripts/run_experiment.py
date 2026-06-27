@@ -19,11 +19,36 @@ from src.trafficllm import build_demos, run_test_sample
 
 DATASET_DIR = os.path.join(os.path.dirname(__file__), "..", "dataset")
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "outputs")
-DEMO_CACHE = os.path.join(OUTPUT_DIR, "demo_chains.json")
+
+# Available dataset families: key -> (train file, test file)
+DATASETS = {
+    "tw":   ("milan_tw_train.jsonl",   "milan_tw_test.jsonl"),    # time-window  (44/19)
+    "slid": ("milan_slid_train.jsonl", "milan_slid_test.jsonl"),  # sliding-window (1042/447)
+}
+
+
+def choose_dataset(cli_value):
+    """Return a valid dataset key, prompting interactively if not given on CLI."""
+    if cli_value in DATASETS:
+        return cli_value
+    print("Which dataset do you want to run?")
+    for i, key in enumerate(DATASETS, 1):
+        train_f, test_f = DATASETS[key]
+        print(f"  {i}) {key:5s} -> {train_f} / {test_f}")
+    while True:
+        choice = input("Enter number or name: ").strip().lower()
+        if choice in DATASETS:
+            return choice
+        if choice.isdigit() and 1 <= int(choice) <= len(DATASETS):
+            return list(DATASETS)[int(choice) - 1]
+        print("  Invalid choice, try again.")
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", choices=list(DATASETS),
+                        help="Which dataset family to run (tw|slid). "
+                             "If omitted, you'll be asked interactively.")
     parser.add_argument("--n_test", type=int, default=3,
                         help="Number of test samples to evaluate (default: 3)")
     parser.add_argument("--k_demos", type=int, default=2,
@@ -37,28 +62,33 @@ def main():
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    dataset = choose_dataset(args.dataset)
+    train_file, test_file = DATASETS[dataset]
+    demo_cache = os.path.join(OUTPUT_DIR, f"demo_chains_{dataset}.json")
+    print(f"[Dataset] Using '{dataset}' -> {train_file} / {test_file}\n")
+
     # ── Phase A ───────────────────────────────────────────────────────────────
-    if os.path.exists(DEMO_CACHE) and not args.rebuild_demos:
-        print(f"[Phase A] Loading cached demos from {DEMO_CACHE}")
-        with open(DEMO_CACHE) as f:
+    if os.path.exists(demo_cache) and not args.rebuild_demos:
+        print(f"[Phase A] Loading cached demos from {demo_cache}")
+        with open(demo_cache) as f:
             demos = json.load(f)
     else:
-        print(f"[Phase A] Building {args.k_demos} demo chains from train.jsonl ...")
-        train_rows = load_jsonl(os.path.join(DATASET_DIR, "w_24-milan_train.jsonl"))
+        print(f"[Phase A] Building {args.k_demos} demo chains from {train_file} ...")
+        train_rows = load_jsonl(os.path.join(DATASET_DIR, train_file))
         demos = build_demos(train_rows, k=args.k_demos, max_iter=args.max_iter)
-        with open(DEMO_CACHE, "w") as f:
+        with open(demo_cache, "w") as f:
             json.dump(demos, f, indent=2)
-        print(f"[Phase A] Saved demos to {DEMO_CACHE}")
+        print(f"[Phase A] Saved demos to {demo_cache}")
 
     demo_chains = [d["rendered_chain"] for d in demos]
     print(f"[Phase A] Using {len(demo_chains)} demo chain(s).\n")
 
     # ── Phase B ───────────────────────────────────────────────────────────────
-    test_rows = load_jsonl(os.path.join(DATASET_DIR, "w_24-milan_test.jsonl"))
+    test_rows = load_jsonl(os.path.join(DATASET_DIR, test_file))
     test_rows = test_rows[:args.n_test]
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(OUTPUT_DIR, f"run_{timestamp}.jsonl")
+    out_path = os.path.join(OUTPUT_DIR, f"run_{dataset}_{timestamp}.jsonl")
 
     total_mae, total_mse, n_ok = 0.0, 0.0, 0
     print(f"[Phase B] Evaluating {len(test_rows)} test sample(s) ...\n")

@@ -9,7 +9,11 @@
       "Bash(git push *)",
       "Bash(python3 -c \"import openai; print\\('openai ok'\\)\")",
       "Bash(python3 -c \"import dotenv; print\\('dotenv ok'\\)\")",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import json,sys; d=json.loads\\(sys.stdin.read\\(\\)\\); print\\('keys:',list\\(d.keys\\(\\)\\)\\); [print\\(f'  {k}: len={len\\(v\\) if isinstance\\(v,list\\) else v}  sample={str\\(v\\)[:60]}'\\) for k,v in d.items\\(\\)]\")",
+      "Bash(python3 -c \"import openai, dotenv; print\\('openai + dotenv OK'\\)\")",
+      "Bash(python3 scripts/run_experiment.py --help)",
+      "Bash(OPENAI_API_KEY='' python3 -c ' *)"
     ]
   }
 }
